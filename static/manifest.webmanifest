@@ -1,0 +1,14 @@
+{
+  "name": "LoanTrack Demo",
+  "short_name": "LoanTrack",
+  "description": "Fictional loan-tracking and collateral-verification demonstration.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#005c3b",
+  "icons": [
+    {"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}
