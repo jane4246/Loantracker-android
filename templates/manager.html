@@ -3,7 +3,36 @@
 <div class="eyebrow">Manager demonstration</div>
 <h1 class="title">Application status workspace</h1>
 <p class="sub">Update a fictional application, then sign in as the matching customer to test the progress view.</p>
+
 <div class="card"><div class="eyebrow">Loan officer dashboard - fictional demo data</div><div class="row"><strong>{{ counts.total }} total applications</strong><span>{{ counts.documents }} awaiting documents</span><span>{{ counts.assessment }} under assessment</span><span>{{ counts.decision }} awaiting decision</span><span>{{ counts.disbursement }} ready for disbursement</span></div><p class="help">Management view: the current queue highlights processing stages and attention areas without using real customer data.</p></div>
+
+<div class="card">
+  <div class="eyebrow">Register a new customer</div>
+  <h2 class="title">Add customer &amp; open first application</h2>
+  <p class="help">Create a fictional customer here. They can then sign in with the ID and PIN you set. Leave the product fields blank if you only want to register the customer for now.</p>
+  <form method="post" action="{{ url_for('manager_create_customer_form') }}">
+    <label>Customer full name *</label>
+    <input name="display_name" required maxlength="120" placeholder="e.g. Jane Mwangi">
+
+    <label>Application / login ID (optional)</label>
+    <input name="username" maxlength="30" placeholder="Leave blank to auto-generate (LT-YYMMDD-NNN)">
+
+    <label>PIN * (min 4 characters)</label>
+    <input name="pin" required minlength="4" maxlength="20" placeholder="e.g. 4321">
+
+    <label>Loan product (optional)</label>
+    <input name="product" maxlength="120" placeholder="e.g. Business expansion loan">
+
+    <label>Requested amount (optional, KES)</label>
+    <input name="requested_amount" type="number" min="1" placeholder="e.g. 300000">
+
+    <label>Next action for customer (optional)</label>
+    <textarea name="next_action" maxlength="500" placeholder="e.g. Please bring your national ID and latest payslip to the branch."></textarea>
+
+    <button class="button">Create customer</button>
+  </form>
+</div>
+
 <div class="split">
   <section><div class="card"><strong>Test applications</strong>
     {% for application in applications %}<a class="case" href="{{ url_for('manager_dashboard', application=application.id) }}"><strong>{{ application.customer.display_name }}</strong><br><span class="sub">{{ application.reference }} · {{ stages[application.stage_index] }}</span></a>{% endfor %}
