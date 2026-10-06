@@ -175,6 +175,15 @@ def require_role(role):
     return user
 
 
+def generate_customer_username():
+    """Generate the next LT-YYMMDD-NNN reference for today."""
+    today = datetime.utcnow().strftime("%y%m%d")
+    prefix = f"LT-{today}-"
+    last = User.query.filter(User.username.like(prefix + "%")).order_by(User.username.desc()).first()
+    seq = int(last.username.split("-")[-1]) + 1 if last else 1
+    return f"{prefix}{seq:03d}"
+
+
 @app.context_processor
 def utility_processor():
     return {"stages": STAGES, "current_user": current_user}
@@ -310,6 +319,104 @@ def api_manager_update_status(application_id):
     db.session.commit()
     return jsonify(ok=True, application=application_payload(a) | {"id": a.id})
 
+
+# ------------------------------------------------------------
+# ANDROID APP: Manager creates a new customer (JSON)
+# ------------------------------------------------------------
+
+@app.post("/api/demo/manager/customers")
+def api_manager_create_customer():
+    """
+    Manager-only. Creates a customer and optionally their first loan application.
+
+    JSON body:
+    {
+      "displayName": "Jane Mwangi",             # required
+      "username":    "LT-260915-001",           # optional; auto-generated
+      "pin":         "4321",                    # required
+      "product":     "Business expansion loan", # optional
+      "requestedAmount": 300000,                # optional but required if product is set
+      "nextAction":  "Please submit your ID."   # optional
+    }
+    """
+    manager = require_api_role("manager")
+    if not manager:
+        return jsonify(error="Manager sign-in required."), 401
+
+    payload = request.get_json(silent=True) or {}
+    display_name = str(payload.get("displayName", "")).strip()
+    username = str(payload.get("username", "")).strip()
+    pin = str(payload.get("pin", "")).strip()
+
+    if not display_name:
+        return jsonify(error="displayName is required."), 400
+    if not pin or len(pin) < 4:
+        return jsonify(error="pin must be at least 4 characters."), 400
+
+    if not username:
+        username = generate_customer_username()
+
+    if User.query.filter_by(username=username).first():
+        return jsonify(error=f"Username {username} already exists."), 409
+
+    customer = User(
+        username=username,
+        password_hash=generate_password_hash(pin),
+        role="customer",
+        display_name=display_name,
+    )
+    db.session.add(customer)
+    db.session.flush()
+
+    application = None
+    product = str(payload.get("product", "")).strip()
+    if product:
+        amount_raw = payload.get("requestedAmount")
+        try:
+            amount = int(amount_raw)
+            if amount <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            db.session.rollback()
+            return jsonify(error="requestedAmount must be a positive integer when product is set."), 400
+
+        application = LoanApplication(
+            reference=username,
+            customer=customer,
+            product=product,
+            requested_amount=amount,
+            stage_index=0,
+            next_action=str(payload.get("nextAction", "")).strip()
+                or "Your application has been received. A credit officer will be in touch.",
+        )
+        db.session.add(application)
+        db.session.flush()
+        db.session.add(StatusEvent(
+            application=application,
+            stage_index=0,
+            message="Application received.",
+            changed_by=manager.display_name,
+        ))
+        db.session.add(Notification(
+            application_id=application.id,
+            message=f"LoanTrack: welcome {display_name}. Your application {username} has been received.",
+        ))
+
+    db.session.commit()
+
+    return jsonify(
+        ok=True,
+        customer={
+            "id": customer.id,
+            "username": customer.username,
+            "displayName": customer.display_name,
+        },
+        application=(
+            {**application_payload(application), "id": application.id}
+            if application else None
+        ),
+    ), 201
+
 # ============================================================
 
 
@@ -358,6 +465,72 @@ def update_application(application_id):
     db.session.commit()
     flash("Demo status updated. Sign in as the customer to see the change.", "success")
     return redirect(url_for("manager_dashboard", application=application.id))
+
+
+# ------------------------------------------------------------
+# WEB UI: Manager creates a customer from the HTML dashboard (form)
+# ------------------------------------------------------------
+
+@app.post("/manager/customers")
+def manager_create_customer_form():
+    manager = require_role("manager")
+
+    display_name = request.form.get("display_name", "").strip()
+    username = request.form.get("username", "").strip()
+    pin = request.form.get("pin", "").strip()
+    product = request.form.get("product", "").strip()
+    amount_raw = request.form.get("requested_amount", "").strip()
+    next_action = request.form.get("next_action", "").strip()
+
+    if not display_name or not pin or len(pin) < 4:
+        flash("Name is required and PIN must be at least 4 characters.", "error")
+        return redirect(url_for("manager_dashboard"))
+
+    if not username:
+        username = generate_customer_username()
+
+    if User.query.filter_by(username=username).first():
+        flash(f"Username {username} already exists. Please choose another.", "error")
+        return redirect(url_for("manager_dashboard"))
+
+    customer = User(
+        username=username,
+        password_hash=generate_password_hash(pin),
+        role="customer",
+        display_name=display_name,
+    )
+    db.session.add(customer)
+    db.session.flush()
+
+    if product:
+        amount_int = int(amount_raw) if amount_raw.isdigit() and int(amount_raw) > 0 else 0
+        if amount_int > 0:
+            application = LoanApplication(
+                reference=username,
+                customer=customer,
+                product=product,
+                requested_amount=amount_int,
+                stage_index=0,
+                next_action=next_action or "Your application has been received. A credit officer will be in touch.",
+            )
+            db.session.add(application)
+            db.session.flush()
+            db.session.add(StatusEvent(
+                application=application,
+                stage_index=0,
+                message="Application received.",
+                changed_by=manager.display_name,
+            ))
+            db.session.add(Notification(
+                application_id=application.id,
+                message=f"LoanTrack: welcome {display_name}. Your application {username} has been received.",
+            ))
+
+    db.session.commit()
+    flash(f"Customer {display_name} created. Login ID: {username}", "success")
+    return redirect(url_for("manager_dashboard"))
+
+# ============================================================
 
 
 @app.post("/manager/application/<int:application_id>/document/<int:document_id>")
