@@ -137,12 +137,33 @@ def api_user():
 
 def application_payload(application):
     return {
-        "reference": application.reference, "product": application.product,
-        "requestedAmount": application.requested_amount, "stageIndex": application.stage_index,
-        "stage": STAGES[application.stage_index], "nextAction": application.next_action,
+        "reference": application.reference,
+        "product": application.product,
+        "requestedAmount": application.requested_amount,
+        "stageIndex": application.stage_index,
+        "stage": STAGES[application.stage_index],
+        "nextAction": application.next_action,
         "updatedAt": application.updated_at.isoformat(),
-        "documents": [{"name": d.name, "status": d.status, "comment": d.officer_comment or ""} for d in Document.query.filter_by(application_id=application.id).all()],
-        "notifications": [{"message": n.message, "createdAt": n.created_at.isoformat()} for n in Notification.query.filter_by(application_id=application.id).order_by(Notification.created_at.desc()).all()],
+        "history": [
+            {
+                "stageIndex": e.stage_index,
+                "stage": STAGES[e.stage_index],
+                "message": e.message,
+                "changedBy": e.changed_by,
+                "createdAt": e.created_at.isoformat(),
+            }
+            for e in StatusEvent.query.filter_by(application_id=application.id)
+                                      .order_by(StatusEvent.created_at.asc()).all()
+        ],
+        "documents": [
+            {"name": d.name, "status": d.status, "comment": d.officer_comment or ""}
+            for d in Document.query.filter_by(application_id=application.id).all()
+        ],
+        "notifications": [
+            {"message": n.message, "createdAt": n.created_at.isoformat()}
+            for n in Notification.query.filter_by(application_id=application.id)
+                                      .order_by(Notification.created_at.desc()).all()
+        ],
         "collateralStatus": application.collateral.customer_status if application.collateral else None,
     }
 
@@ -200,7 +221,96 @@ def api_demo_me():
     if user.role == "customer":
         return jsonify(role="customer", displayName=user.display_name, application=application_payload(user.application))
     applications = LoanApplication.query.order_by(LoanApplication.updated_at.desc()).all()
-    return jsonify(role="manager", displayName=user.display_name, applications=[application_payload(a) | {"customerName": a.customer.display_name} for a in applications])
+    return jsonify(role="manager", displayName=user.display_name, applications=[application_payload(a) | {"customerName": a.customer.display_name, "id": a.id} for a in applications])
+
+
+# ============================================================
+# JSON API endpoints for the Android app
+# ============================================================
+
+def require_api_role(role):
+    user = api_user()
+    if not user or user.role != role:
+        return None
+    return user
+
+
+@app.get("/api/demo/application")
+def api_customer_application():
+    user = require_api_role("customer")
+    if not user:
+        return jsonify(error="Customer sign-in required."), 401
+    return jsonify(application_payload(user.application))
+
+
+@app.get("/api/demo/manager/applications")
+def api_manager_applications():
+    user = require_api_role("manager")
+    if not user:
+        return jsonify(error="Manager sign-in required."), 401
+    apps = LoanApplication.query.order_by(LoanApplication.updated_at.desc()).all()
+    return jsonify(applications=[
+        {
+            **application_payload(a),
+            "customerName": a.customer.display_name,
+            "id": a.id,
+        }
+        for a in apps
+    ])
+
+
+@app.get("/api/demo/manager/application/<int:application_id>")
+def api_manager_application(application_id):
+    user = require_api_role("manager")
+    if not user:
+        return jsonify(error="Manager sign-in required."), 401
+    a = db.session.get(LoanApplication, application_id)
+    if not a:
+        return jsonify(error="Application not found."), 404
+    return jsonify({
+        **application_payload(a),
+        "id": a.id,
+        "customerName": a.customer.display_name,
+    })
+
+
+@app.post("/api/demo/manager/application/<int:application_id>/status")
+def api_manager_update_status(application_id):
+    user = require_api_role("manager")
+    if not user:
+        return jsonify(error="Manager sign-in required."), 401
+    a = db.session.get(LoanApplication, application_id)
+    if not a:
+        return jsonify(error="Application not found."), 404
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        new_stage = int(payload.get("stageIndex"))
+        if new_stage not in range(len(STAGES)):
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify(error="stageIndex must be 0..4"), 400
+
+    note = str(payload.get("message", "")).strip()[:240]
+    action = str(payload.get("nextAction", "")).strip()[:500]
+
+    a.stage_index = new_stage
+    if action:
+        a.next_action = action
+    db.session.add(StatusEvent(
+        application=a,
+        stage_index=new_stage,
+        message=note or f"Status changed to {STAGES[new_stage]}.",
+        changed_by=user.display_name,
+    ))
+    db.session.add(Notification(
+        application_id=a.id,
+        message=f"LoanTrack: your application {a.reference} moved to {STAGES[new_stage]}. Sign in securely to view details.",
+    ))
+    db.session.commit()
+    return jsonify(ok=True, application=application_payload(a) | {"id": a.id})
+
+# ============================================================
 
 
 @app.post("/logout")
